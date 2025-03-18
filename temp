@@ -1,0 +1,60 @@
+import numpy as np
+import pandas as pd
+
+def calculate_confidence_scores(df, threshold=0.6):
+    """
+    This function calculates five confidence scores for multi-label classification.
+    It takes a dataset where each row contains probabilities for multiple labels.
+
+    Args:
+        df (pd.DataFrame): Input dataset with label probabilities.
+        threshold (float): The threshold to determine predicted labels.
+
+    Returns:
+        pd.DataFrame: Updated DataFrame with 5 new confidence score columns.
+    """
+    
+    def compute_scores(row):
+        selected_probs = [p for p in row if p >= threshold]  # Probabilities above threshold
+        non_selected_probs = [p for p in row if p < threshold]  # Probabilities below threshold
+
+        # Score 1: Product-based thresholding
+        score1 = np.prod([p if p >= threshold else (1 - p) for p in row])
+
+        # Score 2: Logarithmic Confidence Score
+        score2 = sum(np.log(p) for p in selected_probs) + sum(np.log(1 - p) for p in non_selected_probs)
+
+        # Score 3: Entropy-Based Score
+        entropy_score = -sum(p * np.log(p) for p in row if p > 0)  # Avoid log(0)
+
+        # Score 4: Weighted Mean Probability Score
+        weighted_mean_score = np.mean(row)
+
+        # Score 5: Softmax Normalized Confidence Score
+        exp_probs = np.exp(row)
+        softmax_probs = exp_probs / np.sum(exp_probs)
+        softmax_confidence = sum(p for p, original_p in zip(softmax_probs, row) if original_p >= threshold)
+
+        return score1, score2, entropy_score, weighted_mean_score, softmax_confidence
+
+    # Apply the function to all rows in the dataset
+    df[['Score1_Product', 'Score2_Log', 'Score3_Entropy', 'Score4_WeightedMean', 'Score5_Softmax']] = df.apply(
+        compute_scores, axis=1, result_type="expand"
+    )
+
+    return df
+
+# Example Usage
+if __name__ == "__main__":
+    # Example dataset (Replace with real probabilities)
+    data = {
+        "label1": [0.9, 0.1, 0.7, 0.5, 0.95],
+        "label2": [0.8, 0.2, 0.6, 0.4, 0.85],
+        "label3": [0.2, 0.9, 0.3, 0.8, 0.1],
+        "label4": [0.1, 0.5, 0.7, 0.3, 0.6],
+    }
+    
+    df = pd.DataFrame(data)
+    df_with_scores = calculate_confidence_scores(df, threshold=0.6)
+
+    print(df_with_scores)
