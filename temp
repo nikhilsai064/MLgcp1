@@ -58,3 +58,25 @@ if __name__ == "__main__":
     df_with_scores = calculate_confidence_scores(df, threshold=0.6)
 
     print(df_with_scores)
+
+
+
+
+import numpy as np
+import pandas as pd
+
+def calculate_product_score(df, threshold=0.6):
+    """
+    Computes confidence score using product-based thresholding.
+    """
+    def product_score(row):
+        score = 1.0
+        for prob in row:
+            if prob >= threshold:
+                score *= prob
+            else:
+                score *= (1 - prob)
+        return score
+    
+    df["Score_Product"] = df.apply(product_score, axis=1)
+    return df
