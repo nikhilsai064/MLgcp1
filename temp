@@ -1,1 +1,66 @@
+import numpy as np
+import pandas as pd
+
+# Define the threshold for prediction
+THRESHOLD = 0.6  
+
+# Example: Load your prediction DataFrame (df should already contain probability values)
+# df = pd.read_csv("your_predictions.csv")
+
+# Function to compute different confidence scores
+def compute_scores(row):
+    selected_probs = row[row >= THRESHOLD].values  # Selected predicted probabilities
+    lesser_probs = row[row < THRESHOLD].values  # Probabilities below the threshold
+    
+    if len(selected_probs) == 0:  # No predicted labels above threshold
+        return pd.Series({
+            "max_prob": 0,
+            "mean_prob": 0,
+            "geo_mean_prob": 0,
+            "harmonic_mean_prob": 0,
+            "log_mean_prob": 0,
+            "product_score": 0
+        })
+    
+    # 1️⃣ Maximum Probability Score
+    max_prob = np.max(selected_probs)
+
+    # 2️⃣ Mean Probability Score (Arithmetic Mean)
+    mean_prob = np.mean(selected_probs)
+
+    # 3️⃣ Geometric Mean Probability Score
+    geo_mean_prob = np.prod(selected_probs) ** (1 / len(selected_probs))
+
+    # 4️⃣ Harmonic Mean Probability Score
+    harmonic_mean_prob = len(selected_probs) / np.sum(1 / selected_probs)
+
+    # 5️⃣ Log-Based Confidence Score
+    log_mean_prob = np.mean(np.log(selected_probs))
+
+    # 6️⃣ Product-Based Score (Your Current Approach)
+    product_score = np.prod(selected_probs) * np.prod(1 - lesser_probs)  # Product-based confidence
+    
+    return pd.Series({
+        "max_prob": max_prob,
+        "mean_prob": mean_prob,
+        "geo_mean_prob": geo_mean_prob,
+        "harmonic_mean_prob": harmonic_mean_prob,
+        "log_mean_prob": log_mean_prob,
+        "product_score": product_score
+    })
+
+# Apply the scoring function to each row
+df_scores = df.apply(compute_scores, axis=1)
+
+# Add scores to the original DataFrame
+df = pd.concat([df, df_scores], axis=1)
+
+# Display the updated DataFrame
+import ace_tools as tools
+tools.display_dataframe_to_user(name="Multi-Label Classification Scores", dataframe=df)
+
+# Save to CSV (Optional)
+# df.to_csv("scored_predictions.csv", index=False)
+
+print("Confidence scores added successfully!")
 
