@@ -61,7 +61,7 @@ if __name__ == "__main__":
 
 
 
-
+1. Product
 import numpy as np
 import pandas as pd
 
@@ -79,4 +79,60 @@ def calculate_product_score(df, threshold=0.6):
         return score
     
     df["Score_Product"] = df.apply(product_score, axis=1)
+    return df
+
+
+2.log
+def calculate_log_score(df, threshold=0.6):
+    """
+    Computes confidence score using the logarithmic probability method.
+    """
+    def log_score(row):
+        selected_probs = [p for p in row if p >= threshold]
+        non_selected_probs = [p for p in row if p < threshold]
+        return sum(np.log(p) for p in selected_probs) + sum(np.log(1 - p) for p in non_selected_probs)
+    
+    df["Score_Log"] = df.apply(log_score, axis=1)
+    return df
+
+
+3.entropy based
+def calculate_entropy_score(df):
+    """
+    Computes confidence score using entropy-based uncertainty measurement.
+    """
+    def entropy_score(row):
+        return -sum(p * np.log(p) for p in row if p > 0)  # Avoid log(0)
+    
+    df["Score_Entropy"] = df.apply(entropy_score, axis=1)
+    return df
+
+
+4. weighted mean prob
+
+def calculate_weighted_mean_score(df, weights=None):
+    """
+    Computes confidence score using a weighted mean of probabilities.
+    """
+    if weights is None:
+        weights = np.ones(df.shape[1])  # Assign equal weights if none provided
+    
+    def weighted_mean_score(row):
+        return np.dot(weights, row) / np.sum(weights)
+    
+    df["Score_WeightedMean"] = df.apply(weighted_mean_score, axis=1)
+    return df
+
+
+5.softmax
+def calculate_softmax_score(df, threshold=0.6):
+    """
+    Computes confidence score using softmax-normalized probabilities.
+    """
+    def softmax_score(row):
+        exp_probs = np.exp(row)
+        softmax_probs = exp_probs / np.sum(exp_probs)
+        return sum(p for p, original_p in zip(softmax_probs, row) if original_p >= threshold)
+    
+    df["Score_Softmax"] = df.apply(softmax_score, axis=1)
     return df
