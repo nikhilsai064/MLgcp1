@@ -1,18 +1,27 @@
 # script.py
 import argparse
-import os
+import time
 from datetime import datetime
 
+# Parse input
 parser = argparse.ArgumentParser()
 parser.add_argument('--x', type=float, required=True, help='Input number to square')
 args = parser.parse_args()
 
-result = args.x ** 2
-timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+# Start time
+start_time = time.time()
+start_dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+print(f"[{start_dt}] Task started")
 
-log_line = f"[{timestamp}] The square of {args.x} is {result}\n"
-print(log_line)
+# Simulate task (square operation, but not printed)
+_ = args.x ** 2
+time.sleep(1)  # Optional: simulate some processing delay
 
-# Optional: also write to a log file inside script (not necessary if you already capture via nohup)
-# with open('logs/manual_log.txt', 'a') as f:
-#     f.write(log_line)
+# End time
+end_time = time.time()
+end_dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+total_time = end_time - start_time
+
+# Log timing info only
+print(f"[{end_dt}] Task ended")
+print(f"Total time taken: {total_time:.2f} seconds")
