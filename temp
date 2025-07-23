@@ -1,27 +1,73 @@
-# script.py
-import argparse
-import time
-from datetime import datetime
+import pandas as pd
+import numpy as np
+import requests
+from sklearn.metrics.pairwise import cosine_similarity
 
-# Parse input
-parser = argparse.ArgumentParser()
-parser.add_argument('--x', type=float, required=True, help='Input number to square')
-args = parser.parse_args()
+# Load master dictionary
+df_master = pd.read_csv('master_procedures.csv')
+df_master['procedure_name_clean'] = df_master['procedure_name'].str.lower().str.strip()
 
-# Start time
-start_time = time.time()
-start_dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-print(f"[{start_dt}] Task started")
+# Simple acronym/synonym map (expand this based on your domain)
+acronym_map = {
+    'cabg': 'coronary artery bypass graft',
+    'ekg': 'electrocardiogram',
+    'mri': 'magnetic resonance imaging',
+    'ct': 'computed tomography',
+    'ptca': 'percutaneous transluminal coronary angioplasty',
+    'htn': 'hypertension treatment',
+    # Add more
+}
 
-# Simulate task (square operation, but not printed)
-_ = args.x ** 2
-time.sleep(1)  # Optional: simulate some processing delay
+def expand_term(term):
+    term = term.lower().strip()
+    return acronym_map.get(term, term)
 
-# End time
-end_time = time.time()
-end_dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-total_time = end_time - start_time
+# Embed text using Ollama nomic-embed-text model
+def get_ollama_embedding(text):
+    url = "http://localhost:11434/api/embeddings"
+    payload = {
+        "model": "nomic-embed-text",
+        "prompt": text
+    }
+    response = requests.post(url, json=payload)
+    if response.status_code == 200:
+        return response.json()['embedding']
+    else:
+        raise Exception(f"Ollama error: {response.text}")
 
-# Log timing info only
-print(f"[{end_dt}] Task ended")
-print(f"Total time taken: {total_time:.2f} seconds")
+# Embed all master procedure names
+print("Embedding master dictionary...")
+df_master['embedding'] = df_master['procedure_name_clean'].apply(get_ollama_embedding)
+
+# Function to find best matching procedure
+def find_best_procedure(user_input, threshold=0.6):
+    input_expanded = expand_term(user_input)
+    input_embedding = np.array(get_ollama_embedding(input_expanded)).reshape(1, -1)
+
+    master_embeddings = np.vstack(df_master['embedding'].to_numpy())
+    similarities = cosine_similarity(input_embedding, master_embeddings).flatten()
+
+    best_idx = np.argmax(similarities)
+    best_score = similarities[best_idx]
+
+    if best_score < threshold:
+        return {"match": None, "score": best_score}
+
+    matched_row = df_master.iloc[best_idx]
+    return {
+        "match": matched_row['procedure_name'],
+        "level": matched_row['level'],
+        "score": best_score
+    }
+
+# 🔍 Try it
+user_inputs = ["CABG", "mri", "Heart scan", "ct", "ptca", "angioplasty"]
+for proc in user_inputs:
+    result = find_best_procedure(proc)
+    print(f"\nInput: {proc}")
+    if result["match"]:
+        print(f"Matched Procedure: {result['match']}")
+        print(f"Level: {result['level']}")
+        print(f"Similarity Score: {result['score']:.2f}")
+    else:
+        print("❌ No confident match found.")
