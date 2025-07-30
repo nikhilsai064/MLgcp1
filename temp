@@ -1,73 +1,36 @@
+from sentence_transformers import SentenceTransformer, util
 import pandas as pd
-import numpy as np
-import requests
-from sklearn.metrics.pairwise import cosine_similarity
 
-# Load master dictionary
-df_master = pd.read_csv('master_procedures.csv')
-df_master['procedure_name_clean'] = df_master['procedure_name'].str.lower().str.strip()
+# Load model (you can choose others like 'all-MiniLM-L6-v2' or Bio-specific models if you have)
+model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
 
-# Simple acronym/synonym map (expand this based on your domain)
-acronym_map = {
-    'cabg': 'coronary artery bypass graft',
-    'ekg': 'electrocardiogram',
-    'mri': 'magnetic resonance imaging',
-    'ct': 'computed tomography',
-    'ptca': 'percutaneous transluminal coronary angioplasty',
-    'htn': 'hypertension treatment',
-    # Add more
-}
+# Load your master dictionary DataFrame (assumed already loaded as df)
+# df = pd.read_csv("your_master_dict.csv")  # Already done
 
-def expand_term(term):
-    term = term.lower().strip()
-    return acronym_map.get(term, term)
+# Optional: create a combined text field for context-based similarity
+df["Combined"] = df["Procedure"] + " - " + df["Anatomic Location"] + " - " + df["Definition"]
 
-# Embed text using Ollama nomic-embed-text model
-def get_ollama_embedding(text):
-    url = "http://localhost:11434/api/embeddings"
-    payload = {
-        "model": "nomic-embed-text",
-        "prompt": text
-    }
-    response = requests.post(url, json=payload)
-    if response.status_code == 200:
-        return response.json()['embedding']
-    else:
-        raise Exception(f"Ollama error: {response.text}")
+# Precompute embeddings for all dictionary entries
+df["Embedding"] = df["Combined"].apply(lambda x: model.encode(x, convert_to_tensor=True))
 
-# Embed all master procedure names
-print("Embedding master dictionary...")
-df_master['embedding'] = df_master['procedure_name_clean'].apply(get_ollama_embedding)
+def get_procedure_level(input_procedure: str, top_k: int = 1):
+    """
+    Matches input procedure with master dictionary and returns the best matching level.
+    """
+    input_embedding = model.encode(input_procedure, convert_to_tensor=True)
+    
+    # Compute cosine similarities
+    similarities = df["Embedding"].apply(lambda emb: float(util.cos_sim(input_embedding, emb)))
 
-# Function to find best matching procedure
-def find_best_procedure(user_input, threshold=0.6):
-    input_expanded = expand_term(user_input)
-    input_embedding = np.array(get_ollama_embedding(input_expanded)).reshape(1, -1)
+    # Find top match
+    top_match_idx = similarities.idxmax()
+    top_score = similarities[top_match_idx]
 
-    master_embeddings = np.vstack(df_master['embedding'].to_numpy())
-    similarities = cosine_similarity(input_embedding, master_embeddings).flatten()
-
-    best_idx = np.argmax(similarities)
-    best_score = similarities[best_idx]
-
-    if best_score < threshold:
-        return {"match": None, "score": best_score}
-
-    matched_row = df_master.iloc[best_idx]
+    if top_score < 0.5:  # You can tune this threshold
+        return {"Matched Procedure": None, "Level": None, "Score": top_score}
+    
     return {
-        "match": matched_row['procedure_name'],
-        "level": matched_row['level'],
-        "score": best_score
+        "Matched Procedure": df.loc[top_match_idx, "Procedure"],
+        "Level": df.loc[top_match_idx, "Level"],
+        "Score": top_score
     }
-
-# 🔍 Try it
-user_inputs = ["CABG", "mri", "Heart scan", "ct", "ptca", "angioplasty"]
-for proc in user_inputs:
-    result = find_best_procedure(proc)
-    print(f"\nInput: {proc}")
-    if result["match"]:
-        print(f"Matched Procedure: {result['match']}")
-        print(f"Level: {result['level']}")
-        print(f"Similarity Score: {result['score']:.2f}")
-    else:
-        print("❌ No confident match found.")
