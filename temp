@@ -1,36 +1,243 @@
-from sentence_transformers import SentenceTransformer, util
-import pandas as pd
+"""
+AngioDynamics Code Finder scraper
+==================================
+Reverse-engineered from the Caspio DataPage that powers:
+https://www.angiodynamics.com/healthcare-professionals/reimbursement-resources/code-finder/
 
-# Load model (you can choose others like 'all-MiniLM-L6-v2' or Bio-specific models if you have)
-model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+The widget is a Caspio "Search + Results" DataPage embedded via iframe at:
+https://c4acy240.caspio.com/dp/FCD5E0008bd89ef4e3464ab4a5cc
 
-# Load your master dictionary DataFrame (assumed already loaded as df)
-# df = pd.read_csv("your_master_dict.csv")  # Already done
+Two AJAX calls happen per search (both POST to the same DataPage URL):
+  1. AjaxAction=SearchForm  -> submits the 3 real search fields (Item_Number,
+     Product_Name, Product_Category). Response JSON includes
+     'reportCriteriaAppSession', the session token the next call needs.
+  2. AjaxAction=GetData     -> pulls the actual result rows (paginated).
+     Response JSON's 'responseText' field contains an HTML fragment with
+     the results <table>.
 
-# Optional: create a combined text field for context-based similarity
-df["Combined"] = df["Procedure"] + " - " + df["Anatomic Location"] + " - " + df["Definition"]
+Only 3 fields are wired up in the live form (FieldName4 is blank), so the
+4th function below is a bulk "get everything" dump -- handy for building
+a ground-truth Item Number -> HCPCS C-Code table.
+"""
 
-# Precompute embeddings for all dictionary entries
-df["Embedding"] = df["Combined"].apply(lambda x: model.encode(x, convert_to_tensor=True))
+import time
+import requests
+from bs4 import BeautifulSoup
 
-def get_procedure_level(input_procedure: str, top_k: int = 1):
-    """
-    Matches input procedure with master dictionary and returns the best matching level.
-    """
-    input_embedding = model.encode(input_procedure, convert_to_tensor=True)
-    
-    # Compute cosine similarities
-    similarities = df["Embedding"].apply(lambda emb: float(util.cos_sim(input_embedding, emb)))
+DATAPAGE_URL = "https://c4acy240.caspio.com/dp/FCD5E0008bd89ef4e3464ab4a5cc"
+APP_KEY = "FCD5E0008bd89ef4e3464ab4a5cc"
+PATHNAME = "https://www.angiodynamics.com/healthcare-professionals/reimbursement-resources/code-finder/"
 
-    # Find top match
-    top_match_idx = similarities.idxmax()
-    top_score = similarities[top_match_idx]
+# These uniqueIds were stable across requests in the captured session (they
+# identify the Search block and the Results block of this specific published
+# DataPage, not a per-visit session). If AngioDynamics ever republishes the
+# DataPage these could change -- if searches start failing, recapture them
+# from DevTools the same way we did this time.
+SEARCH_FORM_UNIQUE_ID = "_2a4b6a5f359956"
+RESULTS_UNIQUE_ID = "_565949fe23f56a"
 
-    if top_score < 0.5:  # You can tune this threshold
-        return {"Matched Procedure": None, "Level": None, "Score": top_score}
-    
-    return {
-        "Matched Procedure": df.loc[top_match_idx, "Procedure"],
-        "Level": df.loc[top_match_idx, "Level"],
-        "Score": top_score
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    ),
+    "Referer": PATHNAME,
+    "Origin": "https://www.angiodynamics.com",
+}
+
+
+def _rnd_url():
+    return f"{DATAPAGE_URL}?rnd={int(time.time() * 1000)}"
+
+
+def _new_session():
+    """Establish cookies the way the real page load would."""
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    try:
+        session.get(_rnd_url(), timeout=15)
+    except requests.RequestException:
+        # Not fatal -- keep going even if the priming GET fails; some
+        # Caspio deployments accept cookie-less POSTs.
+        pass
+    return session
+
+
+def _submit_search_form(session, item_number="", product_name="", category=""):
+    """Step 1: submit criteria, get back the appSession for GetData."""
+    payload = {
+        "cbUniqueFormId": SEARCH_FORM_UNIQUE_ID,
+        "FieldName1": "Item_Number",
+        "Operator1": "OR",
+        "NumCriteriaDetails1": "1",
+        "ComparisonType1_1": "LIKE",
+        "Value1_1": item_number,
+        "MatchNull1_1": "N",
+        "FieldName2": "Product_Name",
+        "Operator2": "OR",
+        "NumCriteriaDetails2": "1",
+        "ComparisonType2_1": "LIKE",
+        "Value2_1": product_name,
+        "MatchNull2_1": "N",
+        "FieldName3": "Product_Category",
+        "Operator3": "OR",
+        "NumCriteriaDetails3": "1",
+        "ComparisonType3_1": "=",
+        "Value3_1": category,
+        "MatchNull3_1": "N",
+        "FieldName4": "",
+        "Operator4": "",
+        "NumCriteriaDetails4": "1",
+        "ComparisonType4_1": "",
+        "Value4_1": "",
+        "MatchNull4_1": "N",
+        "AppKey": APP_KEY,
+        "PrevPageID": "1",
+        "cbPageType": "Search",
+        "ClientQueryString": "",
+        "pathname": PATHNAME,
+        "PageID": "2",
+        "GlobalOperator": "AND",
+        "NumCriteria": "4",
+        "Search": "1",
+        "cbSearchResultsUniqueId": RESULTS_UNIQUE_ID,
+        "AjaxAction": "SearchForm",
+        "GridMode": "False",
+        "js": "true",
+        "AjaxActionHostName": "https://www.angiodynamics.com",
+        "cbAjaxReferrer": PATHNAME,
+        "cbParamList": "",
     }
+    resp = session.post(_rnd_url(), data=payload, timeout=20)
+    resp.raise_for_status()
+    data = resp.json()
+    app_session = data.get("reportCriteriaAppSession")
+    if not app_session:
+        raise RuntimeError(
+            "No reportCriteriaAppSession in SearchForm response -- "
+            "Caspio may have changed the DataPage. Response was: "
+            f"{data}"
+        )
+    return app_session
+
+
+def _get_data_page(session, app_session, page=1, page_size=100):
+    """Step 2: pull one page of results using the appSession from step 1."""
+    payload = {
+        "appSession": app_session,
+        "siblingDataPageAppSessions": "{}",
+        "AjaxAction": "GetData",
+        "GridMode": "False",
+        "cbUniqueFormId": RESULTS_UNIQUE_ID,
+        "js": "true",
+        "cbCurrentPageSize": str(page_size),
+        "CPIPage": str(page),
+        "CPIOrderBy": "Item_Number",
+        "CPISortType": "asc",
+        "PageID": "2",
+        "AjaxActionHostName": "https://www.angiodynamics.com",
+        "cbAjaxReferrer": PATHNAME,
+        "cbParamList": "",
+    }
+    resp = session.post(_rnd_url(), data=payload, timeout=20)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _parse_results_html(html):
+    """Parse the results <table> fragment into a list of dicts."""
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find("table", class_="cbResultSetTable")
+    if not table:
+        return []
+
+    header_row = table.find("thead").find("tr")
+    headers = [
+        th.get_text(strip=True)
+        for th in header_row.find_all("th")
+        if th.get_text(strip=True)  # skip the blank checkbox column header
+    ]
+
+    results = []
+    for row in table.find("tbody").find_all("tr"):
+        cells = row.find_all("td")[1:]  # skip row-index cell
+        values = []
+        for td in cells:
+            label = td.find("span", class_="cbResultSetLabel")
+            if label:
+                label.decompose()
+            values.append(td.get_text(strip=True))
+        if len(values) == len(headers):
+            results.append(dict(zip(headers, values)))
+        else:
+            results.append({"raw_cells": values})
+    return results
+
+
+def _search(item_number="", product_name="", category="", page_size=100):
+    """Run a full search: submit criteria, then page through all results."""
+    session = _new_session()
+    app_session = _submit_search_form(
+        session, item_number=item_number, product_name=product_name, category=category
+    )
+
+    all_results = []
+    page = 1
+    while True:
+        data = _get_data_page(session, app_session, page=page, page_size=page_size)
+        all_results.extend(_parse_results_html(data.get("responseText", "")))
+        total_pages = data.get("totalPageCount", 1)
+        if page >= total_pages:
+            break
+        page += 1
+
+    return all_results
+
+
+# ---------------------------------------------------------------------------
+# The 4 public functions
+# ---------------------------------------------------------------------------
+
+def search_by_item_number(item_number: str):
+    """Search the Code Finder by product Item Number (partial match)."""
+    return _search(item_number=item_number)
+
+
+def search_by_product_name(product_name: str):
+    """Search the Code Finder by Product Name (partial match)."""
+    return _search(product_name=product_name)
+
+
+def search_by_category(category: str):
+    """
+    Search by exact Product Category. Valid values (from the live dropdown):
+    AlphaVac System, Angiographic Catheter, AngioVac, Bipolar RF Resection
+    Device, Cervical Balloons, Dose Monitoring System, Drainage Catheter,
+    EndoRectal Balloons, Guide wire, Guidewire, Infusion Catheter,
+    Infusion Sets, Interventional Neccessities, IRE Ablation,
+    Laser Atherectomy, Microwave Ablation, Midline Catheter, PICC Catheter,
+    PICC Tip Confirmation System, Port Kit, Radiofrequency Ablation,
+    Sheaths and Introducers, Ultrasound Device,
+    Vascular Accessories and Supplies, Vein Ablation
+    """
+    return _search(category=category)
+
+
+def get_all_products():
+    """
+    Bulk dump: run an unfiltered search and page through every record.
+    Useful for building a full Item Number -> HCPCS C-Code reference table.
+    """
+    return _search()
+
+
+if __name__ == "__main__":
+    import json
+
+    print("Searching by product name: 'NanoKnife'...")
+    results = search_by_product_name("NanoKnife")
+    print(json.dumps(results, indent=2))
+
+    # Uncomment to pull the full catalog:
+    # all_products = get_all_products()
+    # print(f"Total records: {len(all_products)}")
